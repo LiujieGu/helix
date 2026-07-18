@@ -37,26 +37,27 @@ Helix 目前是一个基于成熟 OSQP 后端、处于 alpha 阶段的稀疏凸 
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build -j
 ctest --test-dir build --output-on-failure
-./build/examples/helix_portfolio_qp
+./build/examples/portfolio/helix_portfolio_qp
 ```
 
 依赖 Eigen 3.4 和 OSQP 1.0，由 CMake `FetchContent` 获取。依赖项目的测试、示例和文档默认关闭。
 
 投资组合示例包括：
 
-- `examples/Portfolio_LP.cpp`：最大化 alpha，限制单票仓位、流动性和组合换手率；
-- `examples/Portfolio_QP.cpp`：带协方差风险惩罚的均值–方差 QP，并输出组合波动率和 Sharpe。
+- `examples/portfolio/Portfolio_LP.cpp`：最大化 alpha，限制单票仓位、流动性和组合换手率；
+- `examples/portfolio/Portfolio_QP.cpp`：带协方差风险惩罚的均值–方差 QP，并输出组合波动率和
+  Sharpe。
 
 运行 LP 示例：
 
 ```bash
-./build/examples/helix_portfolio_lp
+./build/examples/portfolio/helix_portfolio_lp
 ```
 
 运行均值–方差 QP 示例：
 
 ```bash
-./build/examples/helix_portfolio_qp
+./build/examples/portfolio/helix_portfolio_qp
 ```
 
 QP 示例求解：

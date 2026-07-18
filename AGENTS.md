@@ -7,7 +7,7 @@ C++20 optimization-algorithm library (`helix`). CMake build, VS Code + CMake Too
 ```bash
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release   # configure
 cmake --build build -j                            # build
-./build/examples/helix_portfolio_qp               # run example
+./build/examples/portfolio/helix_portfolio_qp     # run example
 ctest --test-dir build --output-on-failure        # run all tests
 ```
 
@@ -18,7 +18,7 @@ ctest --test-dir build --output-on-failure        # run all tests
 ## Layout
 
 - `src/helix/` — public headers and the OSQP adapter implementation.
-- `examples/` — standalone portfolio LP/QP examples.
+- `examples/portfolio/` — standalone portfolio LP/QP examples and shared constraints.
 - `tests/` — each test is `add_executable` + `add_test` in `tests/CMakeLists.txt`; wired into top-level `ctest`.
 - `build/` — generated, gitignored.
 
