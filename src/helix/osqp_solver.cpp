@@ -1,150 +1,312 @@
 #include "osqp_solver.hpp"
 
-#include <osqp.h>   // pulls in all OSQP public headers
+#include <osqp.h>
 
-#include <Eigen/Sparse>
-#include <cstdlib>
-#include <memory>
+#include <algorithm>
+#include <cmath>
+#include <limits>
+#include <string>
+#include <utility>
 #include <vector>
 
 namespace helix {
-
 namespace {
 
-using SparseMat = Eigen::SparseMatrix<double, Eigen::ColMajor>;
+struct CscStorage {
+    std::vector<OSQPInt> column_pointers;
+    std::vector<OSQPInt> row_indices;
+    std::vector<OSQPFloat> values;
 
-void set_sparse_data(OSQPCscMatrix* M, const SparseMat& mat) {
-    OSQPInt nzmax = static_cast<OSQPInt>(mat.nonZeros());
-    if (!M->p || M->nzmax < nzmax) {
-        if (M->p) { free(M->p); free(M->i); free(M->x); }
-        M->p = static_cast<OSQPInt*>(malloc((mat.cols() + 1) * sizeof(OSQPInt)));
-        M->i = static_cast<OSQPInt*>(malloc(nzmax * sizeof(OSQPInt)));
-        M->x = static_cast<OSQPFloat*>(malloc(nzmax * sizeof(OSQPFloat)));
-        M->nzmax = nzmax;
-    }
-    M->m = static_cast<OSQPInt>(mat.rows());
-    M->n = static_cast<OSQPInt>(mat.cols());
-    M->nz = nzmax;
+    void assign(const SparseMatrix& matrix) {
+        column_pointers.resize(static_cast<std::size_t>(matrix.cols() + 1));
+        row_indices.resize(static_cast<std::size_t>(matrix.nonZeros()));
+        values.resize(static_cast<std::size_t>(matrix.nonZeros()));
 
-    const int* outer = mat.outerIndexPtr();
-    const int* inner = mat.innerIndexPtr();
-    const double* values = mat.valuePtr();
-
-    M->p[0] = 0;
-    for (int j = 0; j < mat.outerSize(); ++j)
-        M->p[j + 1] = static_cast<OSQPInt>(outer[j + 1]);
-    for (int k = 0; k < mat.nonZeros(); ++k) {
-        M->i[k] = static_cast<OSQPInt>(inner[k]);
-        M->x[k] = static_cast<OSQPFloat>(values[k]);
-    }
-}
-
-void clear_csc(OSQPCscMatrix* M) {
-    if (!M) return;
-    if (M->p) { free(M->p); M->p = nullptr; }
-    if (M->i) { free(M->i); M->i = nullptr; }
-    if (M->x) { free(M->x); M->x = nullptr; }
-    M->nzmax = 0;
-}
-
-} // namespace
-
-struct OsqpSolver::Impl {
-    OSQPSolver* solver{nullptr};
-    OSQPSettings* settings{nullptr};
-    SparseMat A_sparse;
-    SparseMat H_sparse;
-    Eigen::VectorXd l, u;
-
-    Impl() {
-        settings = reinterpret_cast<OSQPSettings*>(malloc(sizeof(OSQPSettings)));
-        osqp_set_default_settings(settings);
-        settings->warm_starting = 1;
-        settings->verbose = 0;
+        for (Eigen::Index column = 0; column <= matrix.cols(); ++column) {
+            column_pointers[static_cast<std::size_t>(column)] =
+                static_cast<OSQPInt>(matrix.outerIndexPtr()[column]);
+        }
+        for (Eigen::Index index = 0; index < matrix.nonZeros(); ++index) {
+            row_indices[static_cast<std::size_t>(index)] =
+                static_cast<OSQPInt>(matrix.innerIndexPtr()[index]);
+            values[static_cast<std::size_t>(index)] =
+                static_cast<OSQPFloat>(matrix.valuePtr()[index]);
+        }
     }
 
-    ~Impl() {
-        if (solver) osqp_cleanup(solver);
-        free(settings);
+    [[nodiscard]] OSQPCscMatrix view(OSQPInt rows, OSQPInt columns) {
+        return OSQPCscMatrix{rows,
+                            columns,
+                            column_pointers.data(),
+                            row_indices.empty() ? nullptr : row_indices.data(),
+                            values.empty() ? nullptr : values.data(),
+                            static_cast<OSQPInt>(values.size()),
+                            -1,
+                            0};
+    }
+
+    [[nodiscard]] bool same_pattern(const CscStorage& other) const noexcept {
+        return column_pointers == other.column_pointers && row_indices == other.row_indices;
     }
 };
 
-OsqpSolver::OsqpSolver() : impl_(std::make_unique<Impl>()) {}
-OsqpSolver::~OsqpSolver() = default;
+bool sparse_values_are_finite(const SparseMatrix& matrix) {
+    for (Eigen::Index index = 0; index < matrix.nonZeros(); ++index) {
+        if (!std::isfinite(matrix.valuePtr()[index])) {
+            return false;
+        }
+    }
+    return true;
+}
 
-QpResult OsqpSolver::solve(const QpProblem& problem) {
-    auto& p = *impl_;
-    const OSQPInt n = static_cast<OSQPInt>(problem.H.rows());
-    const OSQPInt m_eq = static_cast<OSQPInt>(problem.A.rows());
-    const OSQPInt m = m_eq + 1 + n; // +1 for sum(x)=1, +n for x >= 0
-
-    p.H_sparse = problem.H.sparseView();
-
-    // A = [original equality constraints; ones_row (sum=1); I_n (x >= 0)]
-    {
-        std::vector<Eigen::Triplet<double>> triplets;
-        SparseMat A_problem = problem.A.sparseView();
-        for (int k = 0; k < A_problem.outerSize(); ++k)
-            for (SparseMat::InnerIterator it(A_problem, k); it; ++it)
-                triplets.emplace_back(it.row(), it.col(), it.value());
-        // sum(x) = 1 row
-        for (OSQPInt j = 0; j < n; ++j)
-            triplets.emplace_back(m_eq, j, 1.0);
-        // x_i >= 0 rows (identity block)
-        for (OSQPInt j = 0; j < n; ++j)
-            triplets.emplace_back(m_eq + 1 + j, j, 1.0);
-        p.A_sparse.resize(m, n);
-        p.A_sparse.setFromTriplets(triplets.begin(), triplets.end());
+std::string validate_problem(const QpProblem& problem) {
+    const Eigen::Index variables = problem.c.size();
+    if (variables <= 0) {
+        return "c must contain at least one variable";
+    }
+    if (problem.H.rows() != variables || problem.H.cols() != variables) {
+        return "H must be square and match c.size()";
+    }
+    if (problem.A.cols() != variables) {
+        return "A.cols() must match c.size()";
+    }
+    if (problem.lower.size() != problem.A.rows() || problem.upper.size() != problem.A.rows()) {
+        return "lower and upper must match A.rows()";
+    }
+    if (!problem.c.allFinite() || !sparse_values_are_finite(problem.H) ||
+        !sparse_values_are_finite(problem.A)) {
+        return "objective and matrix coefficients must be finite";
     }
 
-    p.l.resize(m); p.u.resize(m);
-    for (int i = 0; i < m_eq; ++i) {
-        p.l[i] = problem.b[i];
-        p.u[i] = problem.b[i];
-    }
-    p.l[m_eq] = 1.0;  p.u[m_eq] = 1.0;   // sum(x) = 1
-    for (OSQPInt j = 0; j < n; ++j) {
-        p.l[m_eq + 1 + j] = 0.0;           // x_j >= 0
-        p.u[m_eq + 1 + j] = OSQP_INFTY;
-    }
-
-    OSQPCscMatrix P_mat{};
-    OSQPCscMatrix A_mat{};
-    set_sparse_data(&P_mat, p.H_sparse);
-    set_sparse_data(&A_mat, p.A_sparse);
-
-    std::vector<OSQPFloat> q_vec(n), l_vec(m), u_vec(m);
-    for (int i = 0; i < n; ++i) q_vec[i] = static_cast<OSQPFloat>(problem.c[i]);
-    for (int i = 0; i < m; ++i) l_vec[i] = static_cast<OSQPFloat>(p.l[i]);
-    for (int i = 0; i < m; ++i) u_vec[i] = static_cast<OSQPFloat>(p.u[i]);
-
-    if (p.solver) { osqp_cleanup(p.solver); p.solver = nullptr; }
-    OSQPInt exitflag = osqp_setup(&p.solver,
-                                  &P_mat, q_vec.data(),
-                                  &A_mat, l_vec.data(), u_vec.data(),
-                                  m, n, p.settings);
-    if (exitflag != 0) {
-        clear_csc(&P_mat); clear_csc(&A_mat);
-        return {Eigen::VectorXd::Zero(static_cast<int>(n)), false, 0};
+    for (Eigen::Index row = 0; row < problem.A.rows(); ++row) {
+        if (std::isnan(problem.lower[row]) || std::isnan(problem.upper[row]) ||
+            problem.lower[row] > problem.upper[row]) {
+            return "every constraint must satisfy lower <= upper and contain no NaN";
+        }
+        if (problem.lower[row] == std::numeric_limits<double>::infinity() ||
+            problem.upper[row] == -std::numeric_limits<double>::infinity()) {
+            return "a lower bound cannot be +infinity and an upper bound cannot be -infinity";
+        }
     }
 
-    osqp_warm_start(p.solver, nullptr, nullptr);
-    osqp_solve(p.solver);
-
-    QpResult result;
-    if (p.solver->info->status_val == OSQP_SOLVED ||
-        p.solver->info->status_val == OSQP_SOLVED_INACCURATE) {
-        result.converged = true;
-        result.x.resize(static_cast<int>(n));
-        for (int i = 0; i < n; ++i) result.x[i] = p.solver->solution->x[i];
-        result.iterations = static_cast<int>(p.solver->info->iter);
-    } else {
-        result.converged = false;
-        result.x = Eigen::VectorXd::Zero(static_cast<int>(n));
+    // OSQP consumes only the upper triangle. If a lower triangle is supplied, require the
+    // matching upper coefficient so asymmetric input is never silently discarded.
+    constexpr double symmetry_tolerance = 1e-12;
+    for (int column = 0; column < problem.H.outerSize(); ++column) {
+        for (SparseMatrix::InnerIterator entry(problem.H, column); entry; ++entry) {
+            if (entry.row() <= entry.col()) {
+                continue;
+            }
+            const double mirrored = problem.H.coeff(entry.col(), entry.row());
+            const double scale = 1.0 + std::max(std::abs(entry.value()), std::abs(mirrored));
+            if (std::abs(entry.value() - mirrored) > symmetry_tolerance * scale) {
+                return "H must be symmetric, or contain only its upper triangular part";
+            }
+        }
     }
+    return {};
+}
 
-    clear_csc(&P_mat); clear_csc(&A_mat);
+SparseMatrix upper_triangle(const SparseMatrix& matrix) {
+    SparseMatrix upper = matrix.template triangularView<Eigen::Upper>();
+    upper.makeCompressed();
+    return upper;
+}
+
+SparseMatrix compressed_copy(const SparseMatrix& matrix) {
+    SparseMatrix result = matrix;
+    result.makeCompressed();
     return result;
 }
 
-} // namespace helix
+std::vector<OSQPFloat> copy_vector(const Eigen::VectorXd& vector, bool bounds = false) {
+    std::vector<OSQPFloat> result(static_cast<std::size_t>(vector.size()));
+    for (Eigen::Index index = 0; index < vector.size(); ++index) {
+        double value = vector[index];
+        if (bounds && std::isinf(value)) {
+            value = std::signbit(value) ? -OSQP_INFTY : OSQP_INFTY;
+        }
+        result[static_cast<std::size_t>(index)] = static_cast<OSQPFloat>(value);
+    }
+    return result;
+}
+
+SolveStatus map_status(OSQPInt status) noexcept {
+    switch (status) {
+        case OSQP_SOLVED:
+            return SolveStatus::kSolved;
+        case OSQP_SOLVED_INACCURATE:
+            return SolveStatus::kSolvedInaccurate;
+        case OSQP_PRIMAL_INFEASIBLE:
+        case OSQP_PRIMAL_INFEASIBLE_INACCURATE:
+            return SolveStatus::kPrimalInfeasible;
+        case OSQP_DUAL_INFEASIBLE:
+        case OSQP_DUAL_INFEASIBLE_INACCURATE:
+            return SolveStatus::kDualInfeasible;
+        case OSQP_MAX_ITER_REACHED:
+            return SolveStatus::kMaxIterations;
+        case OSQP_TIME_LIMIT_REACHED:
+            return SolveStatus::kTimeLimit;
+        case OSQP_NON_CVX:
+            return SolveStatus::kNonConvex;
+        case OSQP_SIGINT:
+            return SolveStatus::kInterrupted;
+        default:
+            return SolveStatus::kUnknown;
+    }
+}
+
+}  // namespace
+
+struct OsqpSolver::Impl {
+    explicit Impl(SolverSettings requested_settings) : settings(std::move(requested_settings)) {
+        osqp_set_default_settings(&osqp_settings);
+        osqp_settings.eps_abs = settings.absolute_tolerance;
+        osqp_settings.eps_rel = settings.relative_tolerance;
+        osqp_settings.max_iter = settings.max_iterations;
+        osqp_settings.time_limit = settings.time_limit_seconds > 0.0
+                                       ? settings.time_limit_seconds
+                                       : static_cast<OSQPFloat>(OSQP_TIME_LIMIT);
+        osqp_settings.warm_starting = settings.warm_start ? 1 : 0;
+        osqp_settings.polishing = settings.polish ? 1 : 0;
+        osqp_settings.verbose = settings.verbose ? 1 : 0;
+    }
+
+    ~Impl() { reset(); }
+
+    void reset() noexcept {
+        if (solver != nullptr) {
+            osqp_cleanup(solver);
+            solver = nullptr;
+        }
+        p_storage = {};
+        a_storage = {};
+        rows = 0;
+        columns = 0;
+    }
+
+    SolverSettings settings;
+    OSQPSettings osqp_settings{};
+    OSQPSolver* solver{nullptr};
+    CscStorage p_storage;
+    CscStorage a_storage;
+    OSQPInt rows{0};
+    OSQPInt columns{0};
+};
+
+OsqpSolver::OsqpSolver(SolverSettings settings) : impl_(std::make_unique<Impl>(settings)) {}
+OsqpSolver::~OsqpSolver() = default;
+OsqpSolver::OsqpSolver(OsqpSolver&&) noexcept = default;
+OsqpSolver& OsqpSolver::operator=(OsqpSolver&&) noexcept = default;
+
+void OsqpSolver::reset() noexcept {
+    if (impl_) {
+        impl_->reset();
+    }
+}
+
+SolveResult OsqpSolver::solve(const QpProblem& problem) {
+    SolveResult result;
+    const std::string validation_error = validate_problem(problem);
+    if (!validation_error.empty()) {
+        result.status = SolveStatus::kInvalidProblem;
+        result.message = validation_error;
+        return result;
+    }
+
+    SparseMatrix p_matrix = upper_triangle(problem.H);
+    SparseMatrix a_matrix = compressed_copy(problem.A);
+    CscStorage new_p;
+    CscStorage new_a;
+    new_p.assign(p_matrix);
+    new_a.assign(a_matrix);
+
+    const OSQPInt variables = static_cast<OSQPInt>(problem.c.size());
+    const OSQPInt constraints = static_cast<OSQPInt>(problem.A.rows());
+    auto q = copy_vector(problem.c);
+    auto lower = copy_vector(problem.lower, true);
+    auto upper = copy_vector(problem.upper, true);
+
+    auto& state = *impl_;
+    const bool can_reuse = state.solver != nullptr && state.columns == variables &&
+                           state.rows == constraints && state.p_storage.same_pattern(new_p) &&
+                           state.a_storage.same_pattern(new_a);
+
+    if (can_reuse) {
+        const bool matrices_changed = state.p_storage.values != new_p.values ||
+                                      state.a_storage.values != new_a.values;
+        OSQPInt matrix_error = 0;
+        if (matrices_changed) {
+            matrix_error = osqp_update_data_mat(
+                state.solver, new_p.values.empty() ? nullptr : new_p.values.data(), nullptr,
+                static_cast<OSQPInt>(new_p.values.size()),
+                new_a.values.empty() ? nullptr : new_a.values.data(), nullptr,
+                static_cast<OSQPInt>(new_a.values.size()));
+        }
+        const OSQPInt vector_error =
+            osqp_update_data_vec(state.solver, q.data(), lower.data(), upper.data());
+        if (matrix_error != 0 || vector_error != 0) {
+            state.reset();
+            result.status = SolveStatus::kSetupFailure;
+            result.message = "OSQP rejected a workspace data update";
+            return result;
+        }
+        state.p_storage = std::move(new_p);
+        state.a_storage = std::move(new_a);
+        result.stats.reused_workspace = true;
+        result.stats.updated_matrices = matrices_changed;
+    } else {
+        state.reset();
+        state.p_storage = std::move(new_p);
+        state.a_storage = std::move(new_a);
+        state.rows = constraints;
+        state.columns = variables;
+
+        OSQPCscMatrix p_view = state.p_storage.view(variables, variables);
+        OSQPCscMatrix a_view = state.a_storage.view(constraints, variables);
+        const OSQPInt setup_error = osqp_setup(&state.solver, &p_view, q.data(), &a_view,
+                                               lower.data(), upper.data(), constraints, variables,
+                                               &state.osqp_settings);
+        if (setup_error != 0) {
+            state.reset();
+            result.status = SolveStatus::kSetupFailure;
+            result.message = "OSQP setup failed with error code " + std::to_string(setup_error);
+            return result;
+        }
+    }
+
+    if (!state.settings.warm_start) {
+        osqp_cold_start(state.solver);
+    }
+    const OSQPInt solve_error = osqp_solve(state.solver);
+    if (solve_error != 0 || state.solver->info == nullptr) {
+        result.status = SolveStatus::kUnknown;
+        result.message = "OSQP solve failed with error code " + std::to_string(solve_error);
+        return result;
+    }
+
+    const OSQPInfo& info = *state.solver->info;
+    result.status = map_status(info.status_val);
+    result.message = info.status;
+    result.stats.iterations = static_cast<int>(info.iter);
+    result.stats.rho_updates = static_cast<int>(info.rho_updates);
+    result.stats.objective = info.obj_val;
+    result.stats.primal_residual = info.prim_res;
+    result.stats.dual_residual = info.dual_res;
+    result.stats.setup_time_seconds = info.setup_time;
+    result.stats.solve_time_seconds = info.solve_time;
+
+    if (result.success() && state.solver->solution != nullptr) {
+        result.x.resize(problem.c.size());
+        result.y.resize(problem.A.rows());
+        for (Eigen::Index index = 0; index < result.x.size(); ++index) {
+            result.x[index] = state.solver->solution->x[index];
+        }
+        for (Eigen::Index index = 0; index < result.y.size(); ++index) {
+            result.y[index] = state.solver->solution->y[index];
+        }
+    }
+    return result;
+}
+
+}  // namespace helix

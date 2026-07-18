@@ -1,36 +1,33 @@
 #include "helix/lp_solver.hpp"
-#include "helix/types.hpp"
 
-#include <cassert>
-#include <cmath>
-#include <iostream>
+#include "test_utils.hpp"
+
+#include <Eigen/Sparse>
+
+#include <limits>
+#include <vector>
 
 int main() {
-    const int n = 5;
-    Eigen::VectorXd signal(n);
-    signal << 0.1, 0.8, 0.3, 0.9, 0.5;
-
-    helix::QpProblem lp;
-    lp.c = -signal;
-    lp.H = Eigen::MatrixXd::Zero(n, n);
-    lp.A.resize(0, n);
-    lp.b.resize(0);
+    helix::LpProblem problem;
+    problem.c.resize(2);
+    problem.c << -1.0, -2.0;
+    problem.A.resize(3, 2);
+    const std::vector<Eigen::Triplet<double>> entries{
+        {0, 0, 1.0}, {0, 1, 1.0}, {1, 0, 1.0}, {2, 1, 1.0}};
+    problem.A.setFromTriplets(entries.begin(), entries.end());
+    problem.lower.resize(3);
+    problem.upper.resize(3);
+    problem.lower << 1.0, 0.0, 0.0;
+    problem.upper << 1.0, std::numeric_limits<double>::infinity(),
+        std::numeric_limits<double>::infinity();
 
     helix::LpSolver solver;
-    auto res = solver.solve(lp);
-
-    assert(res.converged);
-
-    // sum(x) == 1
-    assert(std::abs(res.x.sum() - 1.0) < 1e-6);
-
-    // x >= 0
-    for (int i = 0; i < n; ++i)
-        assert(res.x[i] >= -1e-10);
-
-    // optimal: weight on max-signal index (3)
-    assert(res.x[3] > 0.5);
-
-    std::cout << "LP test passed\n";
+    const helix::SolveResult result = solver.solve(problem);
+    TEST_REQUIRE(result.success());
+    TEST_REQUIRE(result.x.size() == 2);
+    TEST_REQUIRE(near(result.x.sum(), 1.0));
+    TEST_REQUIRE(result.x[0] >= -1e-5);
+    TEST_REQUIRE(result.x[1] >= 1.0 - 1e-5);
+    TEST_REQUIRE(result.stats.primal_residual <= 1e-5);
     return 0;
 }

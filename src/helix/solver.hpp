@@ -4,11 +4,11 @@
 
 namespace helix {
 
-class Solver {
+class QpSolver {
 public:
-    virtual ~Solver() = default;
-    virtual QpResult solve(const QpProblem& problem) = 0;
-    [[nodiscard]] virtual const char* name() const = 0;
+    virtual ~QpSolver() = default;
+    virtual SolveResult solve(const QpProblem& problem) = 0;
+    [[nodiscard]] virtual const char* name() const noexcept = 0;
 };
 
-} // namespace helix
+}  // namespace helix

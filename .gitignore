@@ -1,23 +1,49 @@
-# Build output
-build/
-out/
-cmake-build-*/
-
-# CMake
+# CMake build trees and generated metadata
+/build*/
+/out/
+/cmake-build-*/
 CMakeCache.txt
 CMakeFiles/
+CTestTestfile.cmake
 cmake_install.cmake
+install_manifest.txt
 compile_commands.json
+CMakeUserPresets.json
+Testing/
+_deps/
 
-# Compiled objects / binaries
-*.o
-*.obj
+# Build systems
+*.ninja
+.ninja_deps
+.ninja_log
+Makefile
+
+# Compiled artifacts
 *.a
-*.so
+*.d
+*.dll
 *.dylib
 *.exe
+*.gcda
+*.gcno
+*.o
+*.obj
+*.profraw
+*.so
+*.so.*
 
-# Editor / OS
+# Tooling and analysis caches
+/.cache/
+/.clangd/
+/.cmake/
+/.vscode/ipch/
+coverage/
+compile_commands.json
+
+# Editors and operating systems
 .DS_Store
+Thumbs.db
+*.swo
 *.swp
+*~
 .idea/
