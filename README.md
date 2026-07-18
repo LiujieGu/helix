@@ -54,6 +54,34 @@ ctest --test-dir build --output-on-failure
 ./build/examples/portfolio/helix_portfolio_lp
 ```
 
+LP 投资组合优化已经作为公共 API 打包。重复优化时建议复用同一个 optimizer：
+
+```cpp
+#include "helix/portfolio.hpp"
+
+helix::PortfolioOptimizationInput input;
+input.alpha = alpha;
+input.current_position_value = current_position;
+input.max_position_weight = max_position_weight;
+input.liquidity_limit_value = liquidity_limit_value;
+input.max_turnover_ratio = 0.10;
+input.capital = 1'000'000.0;
+
+helix::PortfolioLpOptimizer optimizer;
+helix::PortfolioOptimizationResult result = optimizer.solve(input);
+if (result.success()) {
+    // result.target_position_value: 最优目标持仓金额
+    // result.target_weight:         最优目标权重
+    // result.trade_value:           需要执行的交易金额
+    // result.turnover_ratio:        实际单边换手率
+}
+```
+
+`current_position_value`、`liquidity_limit_value` 和 `capital` 必须使用相同金额单位；
+`max_position_weight` 和 `max_turnover_ratio` 使用比例。当前单边换手率定义为
+`sum(abs(target-current)) / (2*capital)`。一次性调用也可以使用
+`optimize_portfolio_lp(input)`，但不会跨调用复用 workspace 和 warm start。
+
 运行均值–方差 QP 示例：
 
 ```bash

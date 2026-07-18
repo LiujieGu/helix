@@ -60,7 +60,10 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(osqp)
 
-add_library(helix STATIC src/helix/osqp_solver.cpp)
+add_library(helix STATIC
+  src/helix/osqp_solver.cpp
+  src/helix/portfolio.cpp
+)
 add_library(helix::helix ALIAS helix)
 target_include_directories(helix
   PUBLIC

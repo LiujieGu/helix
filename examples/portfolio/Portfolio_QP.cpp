@@ -27,10 +27,9 @@ void validate_covariance(const Eigen::MatrixXd& covariance, Eigen::Index assets)
     }
 }
 
-helix::QpProblem make_portfolio_qp(const helix_examples::PortfolioInput& input,
+helix::QpProblem make_portfolio_qp(const helix::PortfolioOptimizationInput& input,
                                    const Eigen::MatrixXd& covariance,
                                    double risk_aversion) {
-    helix_examples::validate_input(input);
     validate_covariance(covariance, input.alpha.size());
     if (!std::isfinite(risk_aversion) || risk_aversion <= 0.0) {
         throw std::invalid_argument("risk_aversion must be finite and positive");
@@ -38,8 +37,7 @@ helix::QpProblem make_portfolio_qp(const helix_examples::PortfolioInput& input,
 
     const Eigen::Index assets = input.alpha.size();
     const Eigen::Index variables = 2 * assets;
-    const helix_examples::PortfolioConstraints constraints =
-        helix_examples::make_portfolio_constraints(input);
+    const helix::PortfolioConstraintSystem constraints = helix::make_portfolio_constraints(input);
 
     // Mean-variance objective:
     //     maximize alpha'w - 0.5 * risk_aversion * w'covariance*w.
@@ -50,7 +48,7 @@ helix::QpProblem make_portfolio_qp(const helix_examples::PortfolioInput& input,
     problem.H = hessian.sparseView();
     problem.c = Eigen::VectorXd::Zero(variables);
     problem.c.head(assets) = -input.alpha;
-    problem.A = constraints.matrix;
+    problem.A = constraints.A;
     problem.lower = constraints.lower;
     problem.upper = constraints.upper;
     return problem;
@@ -59,7 +57,7 @@ helix::QpProblem make_portfolio_qp(const helix_examples::PortfolioInput& input,
 }  // namespace
 
 int main() {
-    const helix_examples::PortfolioInput input = helix_examples::make_example_input();
+    const helix::PortfolioOptimizationInput input = helix_examples::make_example_input();
 
     // Annualized covariance in the same asset order as alpha.
     Eigen::MatrixXd covariance(4, 4);
@@ -76,10 +74,10 @@ int main() {
 
     try {
         const helix::QpProblem problem = make_portfolio_qp(input, covariance, risk_aversion);
-        helix_examples::PortfolioResult result =
-            helix_examples::decode_result(input, solver.solve(problem));
-        if (!result.solve_result.success()) {
-            std::cerr << "portfolio QP failed: " << result.solve_result.message << '\n';
+        helix::PortfolioOptimizationResult result =
+            helix::make_portfolio_result(input, solver.solve(problem));
+        if (!result.success()) {
+            std::cerr << "portfolio QP failed: " << result.solver_result.message << '\n';
             return 1;
         }
 

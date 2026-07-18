@@ -17,7 +17,7 @@ ctest --test-dir build --output-on-failure        # run all tests
 
 ## Layout
 
-- `src/helix/` — public headers and the OSQP adapter implementation.
+- `src/helix/` — public solver/portfolio APIs and their implementations.
 - `examples/portfolio/` — standalone portfolio LP/QP examples and shared constraints.
 - `tests/` — each test is `add_executable` + `add_test` in `tests/CMakeLists.txt`; wired into top-level `ctest`.
 - `build/` — generated, gitignored.
