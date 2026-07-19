@@ -40,6 +40,30 @@ ctest --test-dir build --output-on-failure
 ./build/examples/portfolio/helix_portfolio_qp
 ```
 
+### Python 扩展
+
+Helix 可以构建为接受 NumPy 向量和 SciPy 稀疏矩阵的 Python 扩展模块：
+构建时需要 Python 3.9 以上版本及对应的开发头文件（Debian/Ubuntu 中为 `python3-dev`）。
+
+```bash
+python3 -m venv .venv
+.venv/bin/pip install .
+.venv/bin/python examples/python/portfolio_lp.py
+.venv/bin/python -m pytest tests/python
+```
+
+也可以直接用 CMake 构建，普通 C++ 构建默认不会引入 Python 依赖：
+
+```bash
+cmake -S . -B build-python -DHELIX_BUILD_PYTHON=ON
+cmake --build build-python -j
+PYTHONPATH=build-python/python python3 -c "import helix; print(helix.__version__)"
+```
+
+通用 LP/QP 分别通过 `helix.LpSolver` 和 `helix.OsqpSolver` 调用，矩阵参数接受
+`scipy.sparse.csc_matrix` 或 CSR 矩阵。重复调用同一个 solver 对象会保留 C++ workspace 和
+warm start 状态。Python 示例位于 `examples/python/`。
+
 依赖 Eigen 3.4 和 OSQP 1.0，由 CMake `FetchContent` 获取。依赖项目的测试、示例和文档默认关闭。
 
 投资组合示例包括：

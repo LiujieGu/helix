@@ -32,6 +32,13 @@ Makefile
 *.so
 *.so.*
 
+# Python environments, caches, and packaging output
+/.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+/dist/
+
 # Tooling and analysis caches
 /.cache/
 /.clangd/

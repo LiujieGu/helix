@@ -1,0 +1,19 @@
+[build-system]
+requires = ["scikit-build-core>=0.10", "pybind11==3.0.4"]
+build-backend = "scikit_build_core.build"
+
+[project]
+name = "helix-optimization"
+version = "0.1.0"
+description = "Python bindings for the Helix convex optimization library"
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = ["numpy>=1.23", "scipy>=1.9"]
+
+[tool.scikit-build]
+cmake.args = [
+  "-DHELIX_BUILD_PYTHON=ON",
+  "-DHELIX_BUILD_TESTS=OFF",
+  "-DHELIX_BUILD_EXAMPLE=OFF",
+]
+wheel.packages = []

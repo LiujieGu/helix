@@ -12,6 +12,12 @@ endif()
 
 option(HELIX_BUILD_TESTS "Build helix tests" ON)
 option(HELIX_BUILD_EXAMPLE "Build the helix example" ON)
+option(HELIX_BUILD_PYTHON "Build the Helix Python extension" OFF)
+
+# Static Helix and OSQP objects are linked into the Python shared module when enabled.
+if(HELIX_BUILD_PYTHON)
+  set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+endif()
 
 include(FetchContent)
 
@@ -83,4 +89,8 @@ endif()
 if(HELIX_BUILD_TESTS)
   enable_testing()
   add_subdirectory(tests)
+endif()
+
+if(HELIX_BUILD_PYTHON)
+  add_subdirectory(python)
 endif()
