@@ -384,3 +384,49 @@ result.stats.updated_matrices;
 
 新增优化任务时，通常不需要修改 `OsqpSolver`。优先新建一个领域建模模块，将业务输入转换为
 `LpProblem` 或 `QpProblem`，调用求解器后再把 `SolveResult::x` 转换为业务结果。
+
+## 12. Python 通用 QP API
+
+Python 接口采用标准 QP 形式：
+
+```text
+minimize    0.5 * x.T @ P @ x + q.T @ x
+subject to  l <= A @ x <= u
+```
+
+可以先构造问题对象，再复用同一个求解器：
+
+```python
+import helix
+import numpy as np
+from scipy import sparse
+
+problem = helix.QPProblem(
+    P=sparse.csc_matrix([[4.0, 1.0], [1.0, 2.0]]),
+    q=np.array([-1.0, -1.0]),
+    A=sparse.csc_matrix([[1.0, 1.0], [1.0, 0.0], [0.0, 1.0]]),
+    l=np.array([1.0, 0.0, 0.0]),
+    u=np.array([1.0, np.inf, np.inf]),
+)
+
+solver = helix.QPSolver()
+result = solver.solve(problem)
+if not result.success:
+    raise RuntimeError(f"{result.status_name}: {result.message}")
+
+print(result.x)
+```
+
+这里第一行约束表示 `x[0] + x[1] == 1`，后两行表示两个变量非负。变量上限、行业中性、
+风险暴露等条件也需要按相同方式增加到 `A/l/u` 中。
+
+修改 `problem.q`、`problem.l` 或 `problem.u` 后再次调用 `solver.solve(problem)`，在矩阵结构
+没有变化时会复用 OSQP workspace。也可以使用 `solver.warm_start(x=..., y=...)` 显式设置
+下一次求解的初始点。只求解一次时，可以直接调用：
+
+```python
+result = helix.solve_qp(P=P, q=q, A=A, l=l, u=u)
+```
+
+小型问题的 `P`、`A` 可以使用二维 NumPy 数组；大型问题应使用 SciPy CSC 或 CSR 稀疏矩阵。
+完整可运行示例参见 `examples/python/qp.py`。

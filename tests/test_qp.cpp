@@ -1,11 +1,9 @@
-#include "helix/osqp_solver.hpp"
-
-#include "test_utils.hpp"
-
 #include <Eigen/Sparse>
-
 #include <limits>
 #include <vector>
+
+#include "helix/osqp_solver.hpp"
+#include "test_utils.hpp"
 
 namespace {
 
@@ -42,6 +40,10 @@ int main() {
     TEST_REQUIRE(near(second.x[0], 3.0 / 7.0));
     TEST_REQUIRE(near(second.x[1], 2.0 / 7.0));
 
+    // Callers may explicitly replace the retained primal iterate between repeated solves.
+    TEST_REQUIRE(solver.has_workspace());
+    solver.warm_start(second.x);
+
     // Contradictory inequalities are reported as infeasible, not as a zero solution.
     helix::QpProblem infeasible;
     infeasible.H.resize(1, 1);
@@ -63,5 +65,7 @@ int main() {
     const helix::SolveResult invalid_result = solver.solve(invalid);
     TEST_REQUIRE(invalid_result.status == helix::SolveStatus::kInvalidProblem);
     TEST_REQUIRE(!invalid_result.message.empty());
+    solver.reset();
+    TEST_REQUIRE(!solver.has_workspace());
     return 0;
 }

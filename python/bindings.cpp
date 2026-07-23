@@ -1,6 +1,8 @@
 #include <pybind11/eigen.h>
 #include <pybind11/pybind11.h>
 
+#include <string>
+
 #include "helix/lp_solver.hpp"
 #include "helix/osqp_solver.hpp"
 #include "helix/portfolio.hpp"
@@ -9,22 +11,56 @@ namespace py = pybind11;
 
 namespace {
 
-helix::SolveResult solve_qp(helix::OsqpSolver& solver, const helix::SparseMatrix& h,
-                            const Eigen::VectorXd& c, const helix::SparseMatrix& a,
-                            const Eigen::VectorXd& lower, const Eigen::VectorXd& upper) {
+helix::SparseMatrix as_sparse_matrix(const py::handle& value, const char* name) {
+    try {
+        helix::SparseMatrix matrix = py::cast<helix::SparseMatrix>(value);
+        matrix.makeCompressed();
+        return matrix;
+    } catch (const py::cast_error&) {
+        // Fall through so small dense NumPy arrays are convenient to use as well.
+    }
+
+    try {
+        const Eigen::MatrixXd dense = py::cast<Eigen::MatrixXd>(value);
+        helix::SparseMatrix matrix = dense.sparseView();
+        matrix.makeCompressed();
+        return matrix;
+    } catch (const py::cast_error&) {
+        throw py::type_error(std::string(name) +
+                             " must be a two-dimensional NumPy array or SciPy sparse matrix");
+    }
+}
+
+helix::QpProblem make_qp_problem(const py::handle& p, const Eigen::VectorXd& q, const py::handle& a,
+                                 const Eigen::VectorXd& lower, const Eigen::VectorXd& upper) {
     helix::QpProblem problem;
-    problem.H = h;
-    problem.c = c;
-    problem.A = a;
+    problem.H = as_sparse_matrix(p, "P");
+    problem.c = q;
+    problem.A = as_sparse_matrix(a, "A");
     problem.lower = lower;
     problem.upper = upper;
+    return problem;
+}
 
+helix::SolveResult solve_qp_problem(helix::OsqpSolver& solver, const helix::QpProblem& problem) {
     helix::SolveResult result;
     {
         py::gil_scoped_release release;
         result = solver.solve(problem);
     }
     return result;
+}
+
+helix::SolveResult solve_qp(helix::OsqpSolver& solver, const py::handle& p,
+                            const Eigen::VectorXd& q, const py::handle& a,
+                            const Eigen::VectorXd& lower, const Eigen::VectorXd& upper) {
+    return solve_qp_problem(solver, make_qp_problem(p, q, a, lower, upper));
+}
+
+void warm_start_qp(helix::OsqpSolver& solver, const py::object& x, const py::object& y) {
+    const Eigen::VectorXd primal = x.is_none() ? Eigen::VectorXd{} : x.cast<Eigen::VectorXd>();
+    const Eigen::VectorXd dual = y.is_none() ? Eigen::VectorXd{} : y.cast<Eigen::VectorXd>();
+    solver.warm_start(primal, dual);
 }
 
 helix::SolveResult solve_lp(helix::LpSolver& solver, const Eigen::VectorXd& c,
@@ -142,12 +178,40 @@ PYBIND11_MODULE(helix, module) {
         .def_property_readonly("success",
                                [](const helix::SolveResult& result) { return result.success(); });
 
-    py::class_<helix::OsqpSolver>(module, "OsqpSolver")
+    py::class_<helix::QpProblem>(module, "QPProblem")
+        .def(py::init<>())
+        .def(py::init([](const py::object& p, const Eigen::VectorXd& q, const py::object& a,
+                         const Eigen::VectorXd& l,
+                         const Eigen::VectorXd& u) { return make_qp_problem(p, q, a, l, u); }),
+             py::arg("P"), py::arg("q"), py::arg("A"), py::arg("l"), py::arg("u"))
+        .def_property(
+            "P", [](const helix::QpProblem& problem) { return problem.H; },
+            [](helix::QpProblem& problem, const py::object& value) {
+                problem.H = as_sparse_matrix(value, "P");
+            })
+        .def_readwrite("q", &helix::QpProblem::c)
+        .def_property(
+            "A", [](const helix::QpProblem& problem) { return problem.A; },
+            [](helix::QpProblem& problem, const py::object& value) {
+                problem.A = as_sparse_matrix(value, "A");
+            })
+        .def_readwrite("l", &helix::QpProblem::lower)
+        .def_readwrite("u", &helix::QpProblem::upper);
+    module.attr("QpProblem") = module.attr("QPProblem");
+
+    py::class_<helix::OsqpSolver>(module, "QPSolver")
         .def(py::init<helix::SolverSettings>(), py::arg("settings") = helix::SolverSettings{})
+        .def("solve", &solve_qp_problem, py::arg("problem"), "Solve a reusable QPProblem instance.")
+        .def("solve", &solve_qp, py::arg("P"), py::arg("q"), py::arg("A"), py::arg("l"),
+             py::arg("u"), "Solve 0.5*x.T@P@x + q.T@x subject to l <= A@x <= u.")
         .def("solve", &solve_qp, py::arg("H"), py::arg("c"), py::arg("A"), py::arg("lower"),
-             py::arg("upper"), "Solve a convex QP using SciPy sparse matrices and NumPy vectors.")
+             py::arg("upper"), "Backward-compatible QP argument names.")
+        .def("warm_start", &warm_start_qp, py::arg("x") = py::none(), py::arg("y") = py::none(),
+             "Set a primal and/or dual initial point for the next solve.")
         .def("reset", &helix::OsqpSolver::reset)
+        .def_property_readonly("has_workspace", &helix::OsqpSolver::has_workspace)
         .def_property_readonly("name", &helix::OsqpSolver::name);
+    module.attr("OsqpSolver") = module.attr("QPSolver");
 
     py::class_<helix::LpSolver>(module, "LpSolver")
         .def(py::init<helix::SolverSettings>(), py::arg("settings") = helix::SolverSettings{})
@@ -213,6 +277,17 @@ PYBIND11_MODULE(helix, module) {
             py::arg("alpha"), py::arg("current_position_value"), py::arg("max_position_weight"),
             py::arg("liquidity_limit_value"), py::arg("max_turnover_ratio"), py::arg("capital"))
         .def("reset", &helix::PortfolioLpOptimizer::reset);
+
+    module.def(
+        "solve_qp",
+        [](const py::object& p, const Eigen::VectorXd& q, const py::object& a,
+           const Eigen::VectorXd& l, const Eigen::VectorXd& u, helix::SolverSettings settings) {
+            helix::OsqpSolver solver(settings);
+            return solve_qp(solver, p, q, a, l, u);
+        },
+        py::arg("P"), py::arg("q"), py::arg("A"), py::arg("l"), py::arg("u"),
+        py::arg("settings") = helix::SolverSettings{},
+        "Solve a one-off convex QP in standard OSQP form.");
 
     module.def(
         "optimize_portfolio_lp",

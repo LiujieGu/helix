@@ -31,6 +31,9 @@ Helix 目前是一个基于成熟 OSQP 后端、处于 alpha 阶段的稀疏凸 
 因此，当前更适合将 Helix 描述为“可用且结构正确的工程原型”，而不是已经完成生产验证的
 通用高性能求解器。
 
+公共 C++ 与 Python API 的参数、返回值、内部实现路径和错误语义统一记录在
+[`docs/api.md`](docs/api.md)。新增或修改公共接口时应同步更新该文档。
+
 ## 构建与测试
 
 ```bash
@@ -60,9 +63,48 @@ cmake --build build-python -j
 PYTHONPATH=build-python/python python3 -c "import helix; print(helix.__version__)"
 ```
 
-通用 LP/QP 分别通过 `helix.LpSolver` 和 `helix.OsqpSolver` 调用，矩阵参数接受
-`scipy.sparse.csc_matrix` 或 CSR 矩阵。重复调用同一个 solver 对象会保留 C++ workspace 和
-warm start 状态。Python 示例位于 `examples/python/`。
+Python 通用 QP 使用与 OSQP 一致的标准形式：
+
+```text
+minimize    0.5 * x.T @ P @ x + q.T @ x
+subject to  l <= A @ x <= u
+```
+
+```python
+import helix
+import numpy as np
+from scipy import sparse
+
+problem = helix.QPProblem(
+    P=sparse.csc_matrix([[4.0, 1.0], [1.0, 2.0]]),
+    q=np.array([-1.0, -1.0]),
+    A=sparse.csc_matrix([[1.0, 1.0], [1.0, 0.0], [0.0, 1.0]]),
+    l=np.array([1.0, 0.0, 0.0]),
+    u=np.array([1.0, np.inf, np.inf]),
+)
+
+solver = helix.QPSolver()
+result = solver.solve(problem)
+if not result.success:
+    raise RuntimeError(f"{result.status_name}: {result.message}")
+
+print(result.x, result.objective)
+```
+
+`P` 和 `A` 接受二维 NumPy 数组以及 SciPy CSC/CSR 稀疏矩阵；大型问题应使用稀疏矩阵。
+`P` 必须半正定，可以传完整对称矩阵或只传上三角。`l`、`u` 支持无穷边界。Helix 不会隐式
+添加非负、预算或变量上下界约束，这些约束都需要作为 `A/l/u` 的行显式传入。
+
+重复调用同一个 `QPSolver` 会保留 C++ workspace 和 warm-start 状态。保持 `P`、`A` 的稀疏
+结构不变时，Helix 会在原 workspace 中更新数据；也可以用 `solver.warm_start(x=..., y=...)`
+显式提供初始点。一次性问题可以调用：
+
+```python
+result = helix.solve_qp(P=P, q=q, A=A, l=l, u=u)
+```
+
+`helix.QPSolver` 当前使用 OSQP 后端；`helix.OsqpSolver` 是它的兼容名称。通用 LP 仍可通过
+`helix.LpSolver` 调用。完整 QP 示例位于 `examples/python/qp.py`。
 
 依赖 Eigen 3.4 和 OSQP 1.0，由 CMake `FetchContent` 获取。依赖项目的测试、示例和文档默认关闭。
 

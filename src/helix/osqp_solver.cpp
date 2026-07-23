@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <stdexcept>
 #include <string>
 #include <utility>
 #include <vector>
@@ -36,13 +37,13 @@ struct CscStorage {
 
     [[nodiscard]] OSQPCscMatrix view(OSQPInt rows, OSQPInt columns) {
         return OSQPCscMatrix{rows,
-                            columns,
-                            column_pointers.data(),
-                            row_indices.empty() ? nullptr : row_indices.data(),
-                            values.empty() ? nullptr : values.data(),
-                            static_cast<OSQPInt>(values.size()),
-                            -1,
-                            0};
+                             columns,
+                             column_pointers.data(),
+                             row_indices.empty() ? nullptr : row_indices.data(),
+                             values.empty() ? nullptr : values.data(),
+                             static_cast<OSQPInt>(values.size()),
+                             -1,
+                             0};
     }
 
     [[nodiscard]] bool same_pattern(const CscStorage& other) const noexcept {
@@ -205,6 +206,42 @@ void OsqpSolver::reset() noexcept {
     }
 }
 
+bool OsqpSolver::has_workspace() const noexcept {
+    return impl_ && impl_->solver != nullptr;
+}
+
+void OsqpSolver::warm_start(const Eigen::VectorXd& primal, const Eigen::VectorXd& dual) {
+    if (!has_workspace()) {
+        throw std::logic_error("solve() must create a workspace before warm_start()");
+    }
+    auto& state = *impl_;
+    if (!state.settings.warm_start) {
+        throw std::logic_error("warm_start is disabled in SolverSettings");
+    }
+    if (primal.size() == 0 && dual.size() == 0) {
+        throw std::invalid_argument("at least one of primal or dual must be provided");
+    }
+    if (primal.size() != 0 && primal.size() != state.columns) {
+        throw std::invalid_argument("primal must match the number of variables");
+    }
+    if (dual.size() != 0 && dual.size() != state.rows) {
+        throw std::invalid_argument("dual must match the number of constraints");
+    }
+    if (!primal.allFinite() || !dual.allFinite()) {
+        throw std::invalid_argument("warm-start vectors must be finite");
+    }
+
+    const auto primal_values = copy_vector(primal);
+    const auto dual_values = copy_vector(dual);
+    const OSQPInt error =
+        osqp_warm_start(state.solver, primal.size() == 0 ? nullptr : primal_values.data(),
+                        dual.size() == 0 ? nullptr : dual_values.data());
+    if (error != 0) {
+        throw std::runtime_error("OSQP rejected warm start with error code " +
+                                 std::to_string(error));
+    }
+}
+
 SolveResult OsqpSolver::solve(const QpProblem& problem) {
     SolveResult result;
     const std::string validation_error = validate_problem(problem);
@@ -233,8 +270,8 @@ SolveResult OsqpSolver::solve(const QpProblem& problem) {
                            state.a_storage.same_pattern(new_a);
 
     if (can_reuse) {
-        const bool matrices_changed = state.p_storage.values != new_p.values ||
-                                      state.a_storage.values != new_a.values;
+        const bool matrices_changed =
+            state.p_storage.values != new_p.values || state.a_storage.values != new_a.values;
         OSQPInt matrix_error = 0;
         if (matrices_changed) {
             matrix_error = osqp_update_data_mat(
@@ -264,9 +301,9 @@ SolveResult OsqpSolver::solve(const QpProblem& problem) {
 
         OSQPCscMatrix p_view = state.p_storage.view(variables, variables);
         OSQPCscMatrix a_view = state.a_storage.view(constraints, variables);
-        const OSQPInt setup_error = osqp_setup(&state.solver, &p_view, q.data(), &a_view,
-                                               lower.data(), upper.data(), constraints, variables,
-                                               &state.osqp_settings);
+        const OSQPInt setup_error =
+            osqp_setup(&state.solver, &p_view, q.data(), &a_view, lower.data(), upper.data(),
+                       constraints, variables, &state.osqp_settings);
         if (setup_error != 0) {
             state.reset();
             result.status = SolveStatus::kSetupFailure;
